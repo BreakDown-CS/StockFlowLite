@@ -126,3 +126,20 @@ func (r *SessionRepository) TouchLastUsed(ctx context.Context, id uuid.UUID, at 
 	}
 	return nil
 }
+
+// PurgeInactive deletes sessions that expired or were revoked before the cutoff.
+// It keeps recent history so an incident can still be investigated.
+func (r *SessionRepository) PurgeInactive(ctx context.Context, before time.Time) (int64, error) {
+	const query = `
+		DELETE FROM auth_sessions
+		WHERE expires_at < $1
+		   OR (revoked_at IS NOT NULL AND revoked_at < $1);
+	`
+
+	tag, err := r.pool.Exec(ctx, query, before)
+	if err != nil {
+		return 0, fmt.Errorf("failed to purge auth sessions: %w", err)
+	}
+
+	return tag.RowsAffected(), nil
+}

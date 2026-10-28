@@ -127,6 +127,10 @@ func respondAuthError(c *fiber.Ctx, err error) error {
 		return response.Error(c, fiber.StatusUnauthorized, "UNAUTHORIZED", "Authentication required")
 	case errors.Is(err, domain.ErrWeakPassword):
 		return response.Error(c, fiber.StatusBadRequest, "WEAK_PASSWORD", domain.ErrWeakPassword.Error())
+	case errors.Is(err, domain.ErrPasswordReused):
+		return response.Error(c, fiber.StatusBadRequest, "PASSWORD_REUSED", domain.ErrPasswordReused.Error())
+	case errors.Is(err, domain.ErrPasswordTooLong):
+		return response.Error(c, fiber.StatusBadRequest, "VALIDATION_ERROR", domain.ErrPasswordTooLong.Error())
 	case errors.Is(err, domain.ErrUserNotFound):
 		return response.Error(c, fiber.StatusNotFound, "NOT_FOUND", "User not found")
 	case errors.Is(err, domain.ErrForbidden):

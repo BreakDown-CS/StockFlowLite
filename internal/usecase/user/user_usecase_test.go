@@ -87,6 +87,11 @@ func (m *mockSessionRepository) TouchLastUsed(ctx context.Context, id uuid.UUID,
 	return m.Called(ctx, id, at).Error(0)
 }
 
+func (m *mockSessionRepository) PurgeInactive(ctx context.Context, before time.Time) (int64, error) {
+	args := m.Called(ctx, before)
+	return args.Get(0).(int64), args.Error(1)
+}
+
 type mockAuditRepository struct{ mock.Mock }
 
 func (m *mockAuditRepository) Record(ctx context.Context, event domain.AuditEvent) error {

@@ -72,9 +72,20 @@ func (h *StockMovementHandler) List(c *fiber.Ctx) error {
 		mType = &parsedType
 	}
 
+	from, err := parseReportTimestamp(c.Query("from"))
+	if err != nil {
+		return response.Error(c, fiber.StatusBadRequest, "INVALID_PARAMETER", "from must be an RFC3339 timestamp")
+	}
+	to, err := parseReportTimestamp(c.Query("to"))
+	if err != nil {
+		return response.Error(c, fiber.StatusBadRequest, "INVALID_PARAMETER", "to must be an RFC3339 timestamp")
+	}
+
 	input := stockmovement.ListMovementsInput{
 		ProductID:    productID,
 		MovementType: mType,
+		From:         from,
+		To:           to,
 		Limit:        limit,
 		Offset:       offset,
 	}
@@ -84,6 +95,9 @@ func (h *StockMovementHandler) List(c *fiber.Ctx) error {
 	if err != nil {
 		if errors.Is(err, domain.ErrInvalidMovementType) {
 			return response.Error(c, fiber.StatusBadRequest, "INVALID_PARAMETER", "Invalid movement_type")
+		}
+		if errors.Is(err, domain.ErrInvalidDateRange) {
+			return response.Error(c, fiber.StatusBadRequest, "INVALID_PARAMETER", domain.ErrInvalidDateRange.Error())
 		}
 		slog.Error("Failed to list stock movements", "error", err)
 		return response.Error(c, fiber.StatusInternalServerError, "INTERNAL_ERROR", "Failed to retrieve stock movements")

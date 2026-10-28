@@ -67,4 +67,14 @@ var (
 	// Stock Movement domain errors
 	ErrInvalidMovementType = errors.New("invalid movement type; must be RECEIPT, ISSUE, or ADJUSTMENT")
 	ErrEmptyReferenceType  = errors.New("movement reference type cannot be empty")
+
+	// Reporting errors
+	ErrInvalidDateRange    = errors.New("invalid date range: 'from' must not be after 'to'")
+	ErrInvalidReportFilter = errors.New("invalid report filter")
+
+	// Integrity & security hardening errors
+	ErrPasswordReused     = errors.New("new password must be different from the current password")
+	ErrPasswordTooLong    = errors.New("password must not exceed 128 characters")
+	ErrInsecureConfig     = errors.New("insecure default credentials/secrets are not allowed outside development")
+	ErrInsecureAuthRouter = errors.New("router requires an authentication use case outside tests")
 )

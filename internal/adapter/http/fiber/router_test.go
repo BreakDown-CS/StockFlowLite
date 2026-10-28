@@ -52,6 +52,8 @@ func (stubStockRequestUsecase) IssueRequest(_ context.Context, id uuid.UUID, _ s
 func TestNewRouter_RegistersStockRequestEndpoints(t *testing.T) {
 	app := httpfiber.NewRouter(httpfiber.RouterConfig{
 		StockRequestHandler: handler.NewStockRequestHandler(stubStockRequestUsecase{}),
+		// Authentication is intentionally disabled for this isolated wiring test.
+		AllowInsecureAuth: true,
 	})
 
 	requestID := uuid.New()

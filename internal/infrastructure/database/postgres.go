@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/BreakDown-CS/StockFlowLite/internal/config"
@@ -27,6 +28,14 @@ func NewPool(ctx context.Context, cfg *config.DBConfig) (*pgxpool.Pool, error) {
 	poolCfg.MinConns = cfg.MinConns
 	poolCfg.MaxConnLifetime = cfg.MaxConnLifetime
 	poolCfg.MaxConnIdleTime = cfg.MaxConnIdleTime
+
+	// Bound every statement so one pathological query cannot pin a pool connection.
+	if cfg.StatementTimeout > 0 {
+		if poolCfg.ConnConfig.RuntimeParams == nil {
+			poolCfg.ConnConfig.RuntimeParams = make(map[string]string)
+		}
+		poolCfg.ConnConfig.RuntimeParams["statement_timeout"] = strconv.FormatInt(cfg.StatementTimeout.Milliseconds(), 10)
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {

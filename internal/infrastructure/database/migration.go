@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -76,7 +77,21 @@ func (m *Migrator) GetApplied(ctx context.Context) (map[string]time.Time, error)
 }
 
 // Up applies pending migrations in ascending order. If steps <= 0, all pending are applied.
+// A session-level advisory lock serialises concurrent migration runners.
 func (m *Migrator) Up(ctx context.Context, steps int) ([]string, error) {
+	var executed []string
+
+	err := m.withAdvisoryLock(ctx, func() error {
+		result, runErr := m.applyPending(ctx, steps)
+		executed = result
+		return runErr
+	})
+
+	return executed, err
+}
+
+// applyPending performs the actual migration work while the advisory lock is held.
+func (m *Migrator) applyPending(ctx context.Context, steps int) ([]string, error) {
 	applied, err := m.GetApplied(ctx)
 	if err != nil {
 		return nil, err
@@ -129,6 +144,19 @@ func (m *Migrator) Up(ctx context.Context, steps int) ([]string, error) {
 
 // Down rolls back applied migrations in descending order. If steps <= 0, defaults to 1.
 func (m *Migrator) Down(ctx context.Context, steps int) ([]string, error) {
+	var rolledBack []string
+
+	err := m.withAdvisoryLock(ctx, func() error {
+		result, runErr := m.rollback(ctx, steps)
+		rolledBack = result
+		return runErr
+	})
+
+	return rolledBack, err
+}
+
+// rollback performs the actual rollback work while the advisory lock is held.
+func (m *Migrator) rollback(ctx context.Context, steps int) ([]string, error) {
 	if steps <= 0 {
 		steps = 1
 	}
@@ -229,6 +257,32 @@ func (m *Migrator) execInTx(ctx context.Context, fn func(tx pgx.Tx) error) error
 	}
 
 	return tx.Commit(ctx)
+}
+
+// migrationAdvisoryLockKey is a stable key shared by every instance so that only one
+// migration runner mutates the schema at a time.
+const migrationAdvisoryLockKey int64 = 728_311_001
+
+// withAdvisoryLock runs fn while holding a PostgreSQL session-level advisory lock.
+// Concurrent runners block until the first one finishes instead of racing.
+func (m *Migrator) withAdvisoryLock(ctx context.Context, fn func() error) error {
+	conn, err := m.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to acquire migration lock connection: %w", err)
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", migrationAdvisoryLockKey); err != nil {
+		return fmt.Errorf("failed to acquire migration advisory lock: %w", err)
+	}
+	defer func() {
+		if _, unlockErr := conn.Exec(context.WithoutCancel(ctx),
+			"SELECT pg_advisory_unlock($1)", migrationAdvisoryLockKey); unlockErr != nil {
+			slog.Warn("Failed to release migration advisory lock", "error", unlockErr)
+		}
+	}()
+
+	return fn()
 }
 
 func parseMigrationFilename(filename, suffix string) (version, name string) {

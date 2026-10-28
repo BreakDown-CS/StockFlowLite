@@ -19,6 +19,7 @@ import (
 	"github.com/BreakDown-CS/StockFlowLite/internal/infrastructure/database"
 	authusecase "github.com/BreakDown-CS/StockFlowLite/internal/usecase/auth"
 	productusecase "github.com/BreakDown-CS/StockFlowLite/internal/usecase/product"
+	reportusecase "github.com/BreakDown-CS/StockFlowLite/internal/usecase/report"
 	"github.com/BreakDown-CS/StockFlowLite/internal/usecase/stockmovement"
 	"github.com/BreakDown-CS/StockFlowLite/internal/usecase/stockrequest"
 	usermgmt "github.com/BreakDown-CS/StockFlowLite/internal/usecase/user"
@@ -99,12 +100,18 @@ func main() {
 		Pepper:        cfg.Auth.TokenPepper,
 		MaxAttempts:   cfg.Auth.MaxLoginAttempts,
 		AttemptWindow: cfg.Auth.LoginWindow,
+		TouchInterval: cfg.Auth.SessionTouchInterval,
 	})
 	userUC := usermgmt.NewUserUsecase(userRepo, sessionRepo, auditRepo, hasher)
 
 	authHandler := handler.NewAuthHandler(authUC)
 	userHandler := handler.NewUserHandler(userUC)
 	auditHandler := handler.NewAuditHandler(auditRepo)
+
+	// Read-only reporting (inventory snapshot, movement ledger, request fulfilment).
+	reportRepo := postgres.NewReportRepository(pool)
+	reportUC := reportusecase.NewUsecase(reportRepo)
+	reportHandler := handler.NewReportHandler(reportUC)
 
 	app := httpfiber.NewRouter(httpfiber.RouterConfig{
 		HealthHandler:        healthHandler,
@@ -115,8 +122,13 @@ func main() {
 		AuthHandler:          authHandler,
 		UserHandler:          userHandler,
 		AuditHandler:         auditHandler,
+		ReportHandler:        reportHandler,
 		AuthUsecase:          authUC,
 		AuditRepository:      auditRepo,
+		ReadTimeout:          cfg.App.ReadTimeout,
+		WriteTimeout:         cfg.App.WriteTimeout,
+		IdleTimeout:          cfg.App.IdleTimeout,
+		BodyLimit:            cfg.App.BodyLimit,
 	})
 
 	// 5. Start HTTP server in a separate goroutine

@@ -221,6 +221,18 @@ func (r *StockMovementRepository) ListMovements(ctx context.Context, filter doma
 		argIdx++
 	}
 
+	if filter.From != nil {
+		where = append(where, fmt.Sprintf("created_at >= $%d", argIdx))
+		args = append(args, *filter.From)
+		argIdx++
+	}
+
+	if filter.To != nil {
+		where = append(where, fmt.Sprintf("created_at <= $%d", argIdx))
+		args = append(args, *filter.To)
+		argIdx++
+	}
+
 	whereClause := strings.Join(where, " AND ")
 
 	// 1. Total count query

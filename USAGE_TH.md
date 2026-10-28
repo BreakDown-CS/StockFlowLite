@@ -20,6 +20,8 @@
   - [2.6 ตัวอย่างการใช้งานครบวงจร](#26-ตัวอย่างการใช้งานครบวงจร-copy-ไปรันได้เลย)
   - [2.7 ข้อจำกัดที่ต้องรู้ก่อนใช้งานจริง](#27-ข้อจำกัดที่ต้องรู้ก่อนใช้งานจริง)
 - [3. Authentication & Authorization (Phase 7)](#3-authentication--authorization-phase-7)
+- [4. Reports (Phase 8)](#4-reports-phase-8)
+- [5. Operations & Security (Phase 9)](#5-operation--security-phase-9)
 - [ภาคผนวก: คำสั่งและไฟล์ที่ควรรู้](#ภาคผนวก-คำสั่งและไฟล์ที่ควรรู้)
 
 ---
@@ -80,6 +82,7 @@ pkg/response       -> response envelope กลาง
 | 24 | PATCH | `/api/v1/users/:id` | เปลี่ยน role / เปิด-ปิดบัญชี (ADMIN) | 200 |
 | 25 | POST | `/api/v1/users/:id/reset-password` | รีเซ็ตรหัสผ่าน (ADMIN) | 200 |
 | 26 | GET | `/api/v1/audit-events` | ดู audit trail (ADMIN) | 200 |
+| 27 | GET | `/api/v1/reports/integrity/stock` | ตรวจ drift ระหว่างสต็อกกับ ledger (ADMIN, read-only) | 200 |
 
 ### 0.2 โครงสร้างข้อมูลหลัก
 
@@ -1609,6 +1612,214 @@ Response มี `meta {limit, offset, total}` และแต่ละ event ม
 
 ---
 
+## 4. Reports (Phase 8)
+
+รายงานเป็น **read-only** ทั้งหมด: ต้องมี Bearer token, ใช้ envelope เดิม แต่ `data` เป็น `{ "summary": {...}, "items": [...] }` และ `meta = {limit, offset, total}`
+ทุก report รันใน read-only transaction (snapshot เดียวกัน) ทำให้ `summary` กับ `items` สอดคล้องกัน และไม่มีการ join ที่ทำให้แถวซ้ำ
+
+### 4.1 Inventory report — `GET /api/v1/reports/inventory`
+
+| param | ค่า | ความหมาย |
+|---|---|---|
+| `search` | string | ค้นหา `sku` หรือ `name` (ILIKE) |
+| `is_active` | `true` (default) / `false` / `all` | เหมือน `GET /products` |
+| `low_stock` | `true` / `false` | `true` = เฉพาะสินค้า active ที่ `current_stock <= min_stock` |
+| `limit` / `offset` | 20 (≤100) / 0 | แบ่งหน้า (เรียงตาม `sku ASC`) |
+
+```bash
+curl.exe "http://localhost:8080/api/v1/reports/inventory?is_active=all&low_stock=true&limit=20" ^
+  -H "Authorization: Bearer <token>"
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "summary": {
+      "total_products": 12, "active_products": 10, "inactive_products": 2,
+      "low_stock_products": 3, "out_of_stock_products": 1
+    },
+    "items": [
+      { "id": "…", "sku": "SKU-1001", "name": "ปากกา", "unit": "BOX",
+        "current_stock": 0, "min_stock": 5, "is_active": true,
+        "is_low_stock": true, "is_out_of_stock": true, "updated_at": "…" }
+    ]
+  },
+  "meta": { "limit": 20, "offset": 0, "total": 12 }
+}
+```
+
+### 4.2 Stock movement report — `GET /api/v1/reports/stock-movements`
+
+| param | ค่า | ความหมาย |
+|---|---|---|
+| `product_id` | UUID | กรองสินค้า (ไม่พบ = ผลว่าง ไม่ใช่ 404) |
+| `movement_type` | `RECEIPT` / `ISSUE` / `ADJUSTMENT` | |
+| `from`, `to` | RFC3339 (UTC) | กรอง `created_at` แบบ inclusive |
+| `limit` / `offset` | 20 (≤100) / 0 | เรียง `created_at DESC, id DESC` |
+
+```json
+{
+  "success": true,
+  "data": {
+    "summary": {
+      "movement_count": 42, "receipt_total_quantity": 300,
+      "issue_total_quantity": 120, "adjustment_total_quantity": 0, "net_change": 180
+    },
+    "items": [
+      { "id": 21, "product_id": "…", "sku": "SKU-1001", "product_name": "ปากกา",
+        "movement_type": "ISSUE", "quantity": 5, "signed_quantity": -5,
+        "reference_type": "STOCK_REQUEST", "reference_id": "REQ-…",
+        "actor_id": "…", "created_at": "…" }
+    ]
+  },
+  "meta": { "limit": 20, "offset": 0, "total": 42 }
+}
+```
+
+> endpoint เดิม `GET /api/v1/stock-movements` **รองรับ `from`/`to` เพิ่มแล้ว** (ใช้ semantics เดียวกัน) แต่ยังไม่มี `summary` และยังไม่ join ชื่อสินค้า
+
+### 4.3 Stock request report — `GET /api/v1/reports/stock-requests`
+
+| param | ค่า | ความหมาย |
+|---|---|---|
+| `status` | `PENDING`/`APPROVED`/`REJECTED`/`ISSUED`/`CANCELLED` | |
+| `requester_id` | UUID | STOREKEEPER/ADMIN เท่านั้น; **REQUESTER ถูกบังคับเป็นตัวเองเสมอ** |
+| `from`, `to` | RFC3339 (UTC) | กรอง `created_at` |
+| `limit` / `offset` | 20 (≤100) / 0 | เรียง `created_at DESC, id DESC` |
+
+```json
+{
+  "success": true,
+  "data": {
+    "summary": {
+      "total_requests": 5, "pending_requests": 1, "approved_requests": 1,
+      "rejected_requests": 1, "issued_requests": 1, "cancelled_requests": 1,
+      "requested_units_total": 42, "issued_units_total": 10
+    },
+    "items": [
+      { "id": "…", "request_number": "REQ-…", "status": "ISSUED",
+        "requester_id": "…", "requester_username": "alice",
+        "item_count": 2, "requested_units": 10, "issued_units": 10,
+        "created_at": "…", "reviewed_at": "…", "issued_at": "…" }
+    ]
+  },
+  "meta": { "limit": 20, "offset": 0, "total": 5 }
+}
+```
+
+### 4.4 กฎการคำนวณ (ยึดตามโค้ดเดิม)
+
+| ตัวเลข | นิยาม |
+|---|---|
+| `current_stock` | อ่านจาก `products.current_stock` โดยตรง (source of truth ไม่คำนวณย้อนจาก ledger) |
+| `is_low_stock` | `is_active AND current_stock <= min_stock` (เหมือน `domain.Product.IsLowStock`) — สินค้า inactive **ไม่นับ** เป็น low stock |
+| `is_out_of_stock` | `current_stock = 0` |
+| สินค้าไม่มี movement | ยังปรากฏในรายงาน (ไม่ผูกกับ ledger) |
+| `signed_quantity` | `RECEIPT = +qty`, `ISSUE = -qty`, `ADJUSTMENT = +qty` |
+| `net_change` | `receipt_total - issue_total + adjustment_total` |
+| `requested_units` | `SUM(stock_request_items.requested_quantity)` ต่อใบ |
+| `issued_units` | `stock_request_issuances.total_quantity` (ไม่มี = 0); ใบที่ยังไม่จ่ายจะเป็น 0 |
+| summary | คำนวณจาก **ทั้งชุดที่กรองแล้ว** ไม่ใช่เฉพาะหน้านั้น |
+
+> ไม่มีผลรวมหน่วยสต็อก (`SUM(current_stock)`) เพราะแต่ละสินค้าใช้ unit ต่างกัน — สรุปเป็นจำนวนรายการเท่านั้น
+
+### 4.5 สิทธิ์การเข้าถึง
+
+| Endpoint | REQUESTER | STOREKEEPER | ADMIN |
+|---|---|---|---|
+| `GET /reports/inventory` | ✅ | ✅ | ✅ |
+| `GET /reports/stock-movements` | ✅ | ✅ | ✅ |
+| `GET /reports/stock-requests` | ✅ เฉพาะของตัวเอง | ✅ ทั้งหมด | ✅ ทั้งหมด |
+
+### 4.6 หมายเหตุ / ข้อจำกัด
+
+- ไม่ส่ง `from`/`to` = ครอบคลุม **ทั้งหมด** (ไม่มี default ช่วงเวลา เพื่อไม่ประดิษฐ์กฎธุรกิจ)
+- `limit` สูงสุด 100, pagination แบบ offset (ledger โตมากในอนาคตควรเปลี่ยนเป็น keyset)
+- รายงานแสดง `actor_id` ของ movement แต่ **ไม่แสดง username** (audit ที่มี username ยังเป็น ADMIN-only)
+- ตรวจ `EXPLAIN (ANALYZE, BUFFERS)` บน DB dev แล้ว: ตารางยังเล็ก (products 3 / movements 2 / requests 0 แถว) จึงใช้ seq scan ตามปกติ → **ไม่เพิ่ม index/migration ในเฟสนี้**; ถ้าข้อมูลโตจน plan เปลี่ยน ให้พิจารณา `(product_id, created_at DESC)`, `(movement_type, created_at DESC)`, `(status, created_at DESC)`
+
+---
+
+## 5. Operations & Security (Phase 9)
+
+### 5.1 Integrity report — `GET /api/v1/reports/integrity/stock` (ADMIN)
+
+ตรวจความสอดคล้องระหว่าง `products.current_stock` (ยอดที่ใช้งานจริง) กับ ledger (`stock_movements`) แบบ **อ่านอย่างเดียว ไม่แก้ข้อมูล**
+
+| param | ค่า | ความหมาย |
+|---|---|---|
+| `only_drifted` | `true` / `false` | แสดงเฉพาะสินค้าที่ `current_stock != SUM(ledger)` |
+| `limit` / `offset` | 20 (≤100) / 0 | เรียงตามขนาด drift มากไปน้อย |
+
+```json
+{
+  "success": true,
+  "data": {
+    "summary": { "total_products": 3, "drifted_products": 0, "absolute_drift": 0 },
+    "items": [
+      { "product_id": "…", "sku": "SKU-1003", "name": "…", "is_active": true,
+        "current_stock": 50, "ledger_stock": 50, "drift": 0 }
+    ]
+  },
+  "meta": { "limit": 20, "offset": 0, "total": 3 }
+}
+```
+
+**นิยามที่ใช้:** `ledger_stock = SUM(RECEIPT qty) - SUM(ISSUE qty) + SUM(ADJUSTMENT qty)`, `drift = current_stock - ledger_stock`
+**ข้อจำกัดสำคัญ:** การคำนวณย้อนจาก ledger ใช้ได้กับข้อมูลที่เปลี่ยนสต็อกผ่าน API เท่านั้น (สินค้าสร้างใหม่เริ่มที่ 0 และสต็อกแก้ได้เฉพาะ receipt/issue) — ถ้ามีการ `UPDATE products` ด้วยมือหรือ stock เริ่มต้น ≠ 0 ค่า drift จะเป็นจริงแต่ไม่ได้แปลว่ามี bug
+
+### 5.2 CLI สำหรับงาน ops — `cmd/maintenance`
+
+```bash
+# ตรวจ drift (exit code 2 = พบ drift เหมาะกับ cron/CI)
+go run ./cmd/maintenance -action check-stock
+go run ./cmd/maintenance -action check-stock -only-drifted
+
+# ล้าง session ที่หมดอายุ/ถูก revoke เกิน 7 วัน (ทำเป็น cron ได้)
+go run ./cmd/maintenance -action purge-sessions -older-than 168h
+```
+
+ผลรันจริงบนเครื่อง dev:
+```
+products checked : 3
+drifted products : 0
+absolute drift   : 0 unit(s)
+no stock drift detected
+purged 0 session(s) inactive before 2026-09-28T07:29:37Z
+```
+
+### 5.3 Security hardening ที่เพิ่มใน Phase 9
+
+| เรื่อง | พฤติกรรม |
+|---|---|
+| Fail-closed config | ถ้า `APP_ENV` ไม่ใช่ development/dev/local/test และยังใช้ `DB_PASSWORD` หรือ `AUTH_TOKEN_PEPPER` ค่า dev → **แอปไม่ยอม start** |
+| Fail-closed router | `NewRouter` จะ panic ถ้าไม่มี `AuthUsecase` และไม่ได้ตั้ง `AllowInsecureAuth` (ใช้เฉพาะเทสต์) |
+| Login timing | ไม่พบ user หรือบัญชีถูกปิด → คำนวณ PBKDF2 กับ dummy hash เพื่อไม่ให้เวลาเปิดเผยว่ามีบัญชีอยู่จริง |
+| Password policy | 8–128 ตัวอักษร, ต้องไม่เท่ากับ username, และ **ห้ามตั้งรหัสใหม่ซ้ำรหัสเดิม** (`400 PASSWORD_REUSED`) |
+| Session | revoke on logout/เปลี่ยนรหัส/ปิดบัญชี; `last_used_at` เขียนไม่ถี่กว่า `AUTH_SESSION_TOUCH_INTERVAL` (default 5m) |
+| DB | `statement_timeout` ต่อ connection (`DB_STATEMENT_TIMEOUT`, default 15s) |
+| HTTP | `ReadTimeout`/`WriteTimeout`/`IdleTimeout`/`BodyLimit` + `helmet` |
+| Log | Access log แบบ structured (method, path, status, duration, request_id, user_id) — **ไม่ log header/body/token** |
+| Migration | ใช้ `pg_advisory_lock` → รัน `migrate up` พร้อมกันหลาย instance ไม่ชนกัน |
+| Audit | ยังเขียนใน transaction เดียวกับ state change; แนะนำ REVOKE UPDATE/DELETE บน `audit_events` ที่ระดับ DB (ops) |
+
+### 5.4 Production checklist
+
+1. `APP_ENV=production`
+2. `DB_PASSWORD` และ `AUTH_TOKEN_PEPPER` ต้องไม่ใช่ค่า dev (ยาว ≥ 16 ตัว, สุ่มจริง) — เก็บใน secret manager ไม่ใช่ repo
+3. เปิด TLS ที่ reverse proxy (แอปไม่ทำ TLS เอง)
+4. รัน `go run ./cmd/migrate -action up` ก่อน deploy (มี advisory lock)
+5. ตั้ง cron: `cmd/maintenance -action check-stock` (แจ้งเตือนเมื่อ exit 2) และ `-action purge-sessions -older-than 168h`
+6. ตั้ง backup ตาม [docs/BACKUP_RESTORE.md](docs/BACKUP_RESTORE.md)
+7. ตรวจ `/health` (liveness) และ `/ready` (DB) จาก monitoring
+8. จำกัดสิทธิ์ DB ของแอป: ไม่ให้ UPDATE/DELETE `audit_events`, ไม่ให้ DDL
+
+> ⚠️ ถ้า `AUTH_TOKEN_PEPPER` ใน `.env` สั้นกว่า 16 ตัว แอปจะไม่ยอม start (fail-closed) — ตั้งค่าให้ยาวกว่านั้นก่อนรัน
+> ⚠️ การเปลี่ยน pepper จะทำให้ session ที่มีอยู่ทั้งหมดใช้ไม่ได้ (ต้อง login ใหม่)
+
+---
+
 ## ภาคผนวก: คำสั่งและไฟล์ที่ควรรู้
 
 ### คำสั่งที่ใช้บ่อย
@@ -1655,6 +1866,8 @@ go test ./... -count=1
 | `migrations/*.sql` | schema + seed (versioned) |
 | `pkg/response/response.go` | response envelope กลาง |
 | `scripts/setup_local_db.sql` | สคริปต์สร้าง role/database สำหรับเครื่อง local (ดูข้อ 1.2.1) |
+| `docs/API_TESTING.md` | คู่มือทดสอบ API ทั้งหมด (51 เคส + ตัวอย่างคำสั่ง + cleanup) |
+| `docs/BACKUP_RESTORE.md` | ขั้นตอนสำรอง/กู้คืนฐานข้อมูล (pg_dump/pg_restore) |
 
 ### ตรวจสอบข้อมูลตรง ๆ ในฐานข้อมูล (อ่านเท่านั้น)
 

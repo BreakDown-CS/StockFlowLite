@@ -24,31 +24,43 @@ type AppConfig struct {
 	Env             string
 	Port            int
 	ShutdownTimeout time.Duration
+	ReadTimeout     time.Duration
+	WriteTimeout    time.Duration
+	IdleTimeout     time.Duration
+	BodyLimit       int
 }
 
 // AuthConfig defines authentication policy. Secrets are never logged.
 type AuthConfig struct {
-	TokenTTL         time.Duration
-	TokenPepper      string
-	PBKDF2Iterations int
-	MaxLoginAttempts int
-	LoginWindow      time.Duration
+	TokenTTL             time.Duration
+	TokenPepper          string
+	PBKDF2Iterations     int
+	MaxLoginAttempts     int
+	LoginWindow          time.Duration
+	SessionTouchInterval time.Duration
 }
 
 // DBConfig defines PostgreSQL connection and pool parameters.
 type DBConfig struct {
-	Host            string
-	Port            int
-	User            string
-	Password        string
-	Name            string
-	SSLMode         string
-	MaxConns        int32
-	MinConns        int32
-	MaxConnLifetime time.Duration
-	MaxConnIdleTime time.Duration
-	HealthTimeout   time.Duration
+	Host             string
+	Port             int
+	User             string
+	Password         string
+	Name             string
+	SSLMode          string
+	MaxConns         int32
+	MinConns         int32
+	MaxConnLifetime  time.Duration
+	MaxConnIdleTime  time.Duration
+	HealthTimeout    time.Duration
+	StatementTimeout time.Duration
 }
+
+// Development defaults that must never be used outside a development environment.
+const (
+	DefaultDevDBPassword  = "stockflow_dev_password"
+	DefaultDevTokenPepper = "stockflow-development-pepper-change-me"
+)
 
 // LoadFromEnv loads configuration from a dotenv file (optional) and environment
 // variables with safe defaults. Precedence: OS environment > dotenv > defaults.
@@ -60,26 +72,32 @@ func LoadFromEnv() (*Config, error) {
 			Env:             getEnvString("APP_ENV", "development"),
 			Port:            getEnvInt("APP_PORT", 8080),
 			ShutdownTimeout: getEnvDuration("APP_SHUTDOWN_TIMEOUT", 10*time.Second),
+			ReadTimeout:     getEnvDuration("APP_READ_TIMEOUT", 15*time.Second),
+			WriteTimeout:    getEnvDuration("APP_WRITE_TIMEOUT", 30*time.Second),
+			IdleTimeout:     getEnvDuration("APP_IDLE_TIMEOUT", 60*time.Second),
+			BodyLimit:       getEnvInt("APP_BODY_LIMIT_BYTES", 1<<20), // 1 MiB
 		},
 		DB: DBConfig{
-			Host:            getEnvString("DB_HOST", "127.0.0.1"),
-			Port:            getEnvInt("DB_PORT", 5432),
-			User:            getEnvString("DB_USER", "stockflow_user"),
-			Password:        getEnvString("DB_PASSWORD", "stockflow_dev_password"),
-			Name:            getEnvString("DB_NAME", "stockflow_db"),
-			SSLMode:         getEnvString("DB_SSLMODE", "disable"),
-			MaxConns:        int32(getEnvInt("DB_MAX_CONNS", 25)),
-			MinConns:        int32(getEnvInt("DB_MIN_CONNS", 5)),
-			MaxConnLifetime: getEnvDuration("DB_MAX_CONN_LIFETIME", 1*time.Hour),
-			MaxConnIdleTime: getEnvDuration("DB_MAX_CONN_IDLE_TIME", 30*time.Minute),
-			HealthTimeout:   getEnvDuration("DB_HEALTH_TIMEOUT", 3*time.Second),
+			Host:             getEnvString("DB_HOST", "127.0.0.1"),
+			Port:             getEnvInt("DB_PORT", 5432),
+			User:             getEnvString("DB_USER", "stockflow_user"),
+			Password:         getEnvString("DB_PASSWORD", DefaultDevDBPassword),
+			Name:             getEnvString("DB_NAME", "stockflow_db"),
+			SSLMode:          getEnvString("DB_SSLMODE", "disable"),
+			MaxConns:         int32(getEnvInt("DB_MAX_CONNS", 25)),
+			MinConns:         int32(getEnvInt("DB_MIN_CONNS", 5)),
+			MaxConnLifetime:  getEnvDuration("DB_MAX_CONN_LIFETIME", 1*time.Hour),
+			MaxConnIdleTime:  getEnvDuration("DB_MAX_CONN_IDLE_TIME", 30*time.Minute),
+			HealthTimeout:    getEnvDuration("DB_HEALTH_TIMEOUT", 3*time.Second),
+			StatementTimeout: getEnvDuration("DB_STATEMENT_TIMEOUT", 15*time.Second),
 		},
 		Auth: AuthConfig{
-			TokenTTL:         getEnvDuration("AUTH_TOKEN_TTL", 12*time.Hour),
-			TokenPepper:      getEnvString("AUTH_TOKEN_PEPPER", "stockflow-development-pepper-change-me"),
-			PBKDF2Iterations: getEnvInt("AUTH_PBKDF2_ITERATIONS", coreauth.DefaultIterations),
-			MaxLoginAttempts: getEnvInt("AUTH_MAX_LOGIN_ATTEMPTS", 8),
-			LoginWindow:      getEnvDuration("AUTH_LOGIN_WINDOW", 15*time.Minute),
+			TokenTTL:             getEnvDuration("AUTH_TOKEN_TTL", 12*time.Hour),
+			TokenPepper:          getEnvString("AUTH_TOKEN_PEPPER", DefaultDevTokenPepper),
+			PBKDF2Iterations:     getEnvInt("AUTH_PBKDF2_ITERATIONS", coreauth.DefaultIterations),
+			MaxLoginAttempts:     getEnvInt("AUTH_MAX_LOGIN_ATTEMPTS", 8),
+			LoginWindow:          getEnvDuration("AUTH_LOGIN_WINDOW", 15*time.Minute),
+			SessionTouchInterval: getEnvDuration("AUTH_SESSION_TOUCH_INTERVAL", 5*time.Minute),
 		},
 	}
 
@@ -127,8 +145,25 @@ func (c *Config) Validate() error {
 	if c.DB.HealthTimeout <= 0 {
 		errs = append(errs, "DB_HEALTH_TIMEOUT must be positive")
 	}
+	if c.DB.StatementTimeout <= 0 {
+		errs = append(errs, "DB_STATEMENT_TIMEOUT must be positive")
+	}
 
-	// Validate Auth Config
+	// HTTP hardening
+	if c.App.ReadTimeout <= 0 {
+		errs = append(errs, "APP_READ_TIMEOUT must be positive")
+	}
+	if c.App.WriteTimeout <= 0 {
+		errs = append(errs, "APP_WRITE_TIMEOUT must be positive")
+	}
+	if c.App.IdleTimeout <= 0 {
+		errs = append(errs, "APP_IDLE_TIMEOUT must be positive")
+	}
+	if c.App.BodyLimit <= 0 {
+		errs = append(errs, "APP_BODY_LIMIT_BYTES must be positive")
+	}
+
+	// Authentication
 	if c.Auth.TokenTTL <= 0 {
 		errs = append(errs, "AUTH_TOKEN_TTL must be positive")
 	}
@@ -144,11 +179,35 @@ func (c *Config) Validate() error {
 	if c.Auth.LoginWindow <= 0 {
 		errs = append(errs, "AUTH_LOGIN_WINDOW must be positive")
 	}
+	if c.Auth.SessionTouchInterval <= 0 {
+		errs = append(errs, "AUTH_SESSION_TOUCH_INTERVAL must be positive")
+	}
+
+	// Fail closed: development defaults must never reach a non-development environment.
+	if !c.IsDevelopment() {
+		if c.DB.Password == DefaultDevDBPassword {
+			errs = append(errs, "DB_PASSWORD must not use the development default outside development")
+		}
+		if c.Auth.TokenPepper == DefaultDevTokenPepper {
+			errs = append(errs, "AUTH_TOKEN_PEPPER must not use the development default outside development")
+		}
+	}
 
 	if len(errs) > 0 {
 		return errors.New(strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+// IsDevelopment reports whether the configured environment is a local/dev environment
+// where the development default credentials/secrets are acceptable.
+func (c *Config) IsDevelopment() bool {
+	switch strings.ToLower(strings.TrimSpace(c.App.Env)) {
+	case "development", "dev", "local", "test":
+		return true
+	default:
+		return false
+	}
 }
 
 // ConnString constructs the connection string for pgxpool.

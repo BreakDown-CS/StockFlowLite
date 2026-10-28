@@ -24,4 +24,7 @@ type SessionRepository interface {
 
 	// TouchLastUsed records session activity without failing the request.
 	TouchLastUsed(ctx context.Context, id uuid.UUID, at time.Time) error
+
+	// PurgeInactive deletes sessions that expired or were revoked before the cutoff.
+	PurgeInactive(ctx context.Context, before time.Time) (int64, error)
 }

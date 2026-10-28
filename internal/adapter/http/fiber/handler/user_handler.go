@@ -239,6 +239,8 @@ func respondUserError(c *fiber.Ctx, err error) error {
 		return response.Error(c, fiber.StatusForbidden, "FORBIDDEN", domain.ErrForbidden.Error())
 	case errors.Is(err, domain.ErrWeakPassword):
 		return response.Error(c, fiber.StatusBadRequest, "WEAK_PASSWORD", domain.ErrWeakPassword.Error())
+	case errors.Is(err, domain.ErrPasswordTooLong):
+		return response.Error(c, fiber.StatusBadRequest, "VALIDATION_ERROR", domain.ErrPasswordTooLong.Error())
 	case errors.Is(err, domain.ErrEmptyUsername),
 		errors.Is(err, domain.ErrUsernameTooShort),
 		errors.Is(err, domain.ErrUsernameTooLong),

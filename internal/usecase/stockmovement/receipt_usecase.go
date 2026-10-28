@@ -3,6 +3,7 @@ package stockmovement
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/BreakDown-CS/StockFlowLite/internal/domain"
 	"github.com/google/uuid"
@@ -21,6 +22,8 @@ type ReceiveStockInput struct {
 type ListMovementsInput struct {
 	ProductID    *uuid.UUID
 	MovementType *domain.MovementType
+	From         *time.Time
+	To           *time.Time
 	Limit        int
 	Offset       int
 }
@@ -87,9 +90,15 @@ func (uc *stockMovementUsecase) ListMovements(ctx context.Context, input ListMov
 		}
 	}
 
+	if input.From != nil && input.To != nil && input.From.After(*input.To) {
+		return nil, 0, domain.ErrInvalidDateRange
+	}
+
 	filter := domain.ListMovementFilter{
 		ProductID:    input.ProductID,
 		MovementType: input.MovementType,
+		From:         input.From,
+		To:           input.To,
 		Limit:        limit,
 		Offset:       offset,
 	}

@@ -77,11 +77,21 @@ func TestHasher_DefaultIterationsFloor(t *testing.T) {
 	assert.Equal(t, auth.DefaultIterations, hasher.Iterations(), "unsafe iteration counts must fall back to the default")
 }
 
+func TestHasher_VerifyRejectsOverlongPassword(t *testing.T) {
+	hasher := testHasher()
+
+	hash, err := hasher.Hash("short-enough")
+	require.NoError(t, err)
+
+	assert.False(t, hasher.Verify(hash, strings.Repeat("a", auth.MaxPasswordLen+1)))
+}
+
 func TestValidatePasswordPolicy(t *testing.T) {
 	assert.NoError(t, auth.ValidatePasswordPolicy("alice", "s3cret-pass"))
 	assert.ErrorIs(t, auth.ValidatePasswordPolicy("alice", "short"), domain.ErrWeakPassword)
 	assert.ErrorIs(t, auth.ValidatePasswordPolicy("alice", ""), domain.ErrWeakPassword)
 	assert.ErrorIs(t, auth.ValidatePasswordPolicy("Alice", "alice"), domain.ErrWeakPassword)
+	assert.ErrorIs(t, auth.ValidatePasswordPolicy("alice", strings.Repeat("a", auth.MaxPasswordLen+1)), domain.ErrPasswordTooLong)
 }
 
 func TestGenerateToken(t *testing.T) {

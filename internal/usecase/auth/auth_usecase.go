@@ -37,6 +37,8 @@ type Config struct {
 	Pepper        string
 	MaxAttempts   int
 	AttemptWindow time.Duration
+	// TouchInterval throttles session last_used_at writes (one per interval at most).
+	TouchInterval time.Duration
 }
 
 // AuthUsecase defines authentication and session operations.
@@ -49,12 +51,13 @@ type AuthUsecase interface {
 }
 
 type authUsecase struct {
-	users    domain.UserRepository
-	sessions domain.SessionRepository
-	audit    domain.AuditRepository
-	hasher   *coreauth.Hasher
-	cfg      Config
-	limiter  *loginLimiter
+	users     domain.UserRepository
+	sessions  domain.SessionRepository
+	audit     domain.AuditRepository
+	hasher    *coreauth.Hasher
+	cfg       Config
+	limiter   *loginLimiter
+	dummyHash string
 }
 
 // NewAuthUsecase constructs the authentication use case.
@@ -74,14 +77,25 @@ func NewAuthUsecase(
 	if cfg.AttemptWindow <= 0 {
 		cfg.AttemptWindow = 15 * time.Minute
 	}
+	if cfg.TouchInterval <= 0 {
+		cfg.TouchInterval = 5 * time.Minute
+	}
+
+	// A deterministic hash used to spend the same work when the username does not exist,
+	// so login latency cannot be used to enumerate accounts.
+	dummyHash, err := hasher.Hash("timing-equaliser-not-a-real-password")
+	if err != nil {
+		dummyHash = ""
+	}
 
 	return &authUsecase{
-		users:    users,
-		sessions: sessions,
-		audit:    audit,
-		hasher:   hasher,
-		cfg:      cfg,
-		limiter:  newLoginLimiter(cfg.MaxAttempts, cfg.AttemptWindow),
+		users:     users,
+		sessions:  sessions,
+		audit:     audit,
+		hasher:    hasher,
+		cfg:       cfg,
+		limiter:   newLoginLimiter(cfg.MaxAttempts, cfg.AttemptWindow),
+		dummyHash: dummyHash,
 	}
 }
 
@@ -103,20 +117,25 @@ func (uc *authUsecase) Login(ctx context.Context, input LoginInput) (*LoginResul
 		if !errors.Is(err, domain.ErrUserNotFound) {
 			slog.Error("Failed to load user during login", "error", err)
 		}
+		// Spend the same hashing work as a real verification so an unknown username
+		// cannot be distinguished from a wrong password by response time.
+		uc.hasher.Verify(uc.dummyHash, input.Password)
 		uc.limiter.RegisterFailure(limitKey)
 		uc.recordLoginFailure(ctx, username, input, "unknown-user")
-		return nil, domain.ErrInvalidCredentials
-	}
-
-	if !user.IsActive {
-		uc.limiter.RegisterFailure(limitKey)
-		uc.recordLoginFailure(ctx, username, input, "inactive-account")
 		return nil, domain.ErrInvalidCredentials
 	}
 
 	if !uc.hasher.Verify(user.PasswordHash, input.Password) {
 		uc.limiter.RegisterFailure(limitKey)
 		uc.recordLoginFailure(ctx, username, input, "bad-password")
+		return nil, domain.ErrInvalidCredentials
+	}
+
+	// The account state is only inspected after the credential check, so inactive
+	// accounts cost the same as a wrong password.
+	if !user.IsActive {
+		uc.limiter.RegisterFailure(limitKey)
+		uc.recordLoginFailure(ctx, username, input, "inactive-account")
 		return nil, domain.ErrInvalidCredentials
 	}
 
@@ -227,6 +246,9 @@ func (uc *authUsecase) ChangePassword(ctx context.Context, actor domain.Actor, c
 	if err := coreauth.ValidatePasswordPolicy(user.Username, newPassword); err != nil {
 		return err
 	}
+	if uc.hasher.Verify(user.PasswordHash, newPassword) {
+		return domain.ErrPasswordReused
+	}
 
 	hash, err := uc.hasher.Hash(newPassword)
 	if err != nil {
@@ -270,8 +292,11 @@ func (uc *authUsecase) Authenticate(ctx context.Context, token string) (domain.A
 		return domain.Actor{}, nil, domain.ErrUserInactive
 	}
 
-	if err := uc.sessions.TouchLastUsed(ctx, session.ID, time.Now().UTC()); err != nil {
-		slog.Debug("Failed to touch auth session", "session_id", session.ID.String(), "error", err)
+	// Throttle last_used_at writes: at most one UPDATE per configured interval per session.
+	if session.LastUsedAt == nil || time.Since(*session.LastUsedAt) >= uc.cfg.TouchInterval {
+		if err := uc.sessions.TouchLastUsed(ctx, session.ID, time.Now().UTC()); err != nil {
+			slog.Debug("Failed to touch auth session", "session_id", session.ID.String(), "error", err)
+		}
 	}
 
 	return domain.Actor{ID: user.ID, Username: user.Username, Role: user.Role}, session, nil

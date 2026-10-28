@@ -21,6 +21,7 @@ const (
 	// MinIterations is the lowest work factor the verifier will accept.
 	MinIterations  = 100_000
 	MinPasswordLen = 8
+	MaxPasswordLen = 128
 
 	saltLength = 16
 	keyLength  = 32
@@ -101,8 +102,11 @@ func (h *Hasher) NeedsRehash(passwordHash string) bool {
 	return params.iterations < h.iterations
 }
 
-// ValidatePasswordPolicy enforces the minimum password requirements.
+// ValidatePasswordPolicy enforces the password requirements.
 func ValidatePasswordPolicy(username, password string) error {
+	if len(password) > MaxPasswordLen {
+		return domain.ErrPasswordTooLong
+	}
 	if len(password) < MinPasswordLen {
 		return domain.ErrWeakPassword
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/BreakDown-CS/StockFlowLite/internal/adapter/http/fiber/handler"
 	"github.com/BreakDown-CS/StockFlowLite/internal/domain"
 	authusecase "github.com/BreakDown-CS/StockFlowLite/internal/usecase/auth"
+	reportusecase "github.com/BreakDown-CS/StockFlowLite/internal/usecase/report"
 	"github.com/BreakDown-CS/StockFlowLite/internal/usecase/stockmovement"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -66,6 +67,24 @@ func (stubAuditRepository) List(context.Context, domain.ListAuditFilter) ([]doma
 	return []domain.AuditEvent{}, 0, nil
 }
 
+type stubReportUsecase struct{}
+
+func (stubReportUsecase) Inventory(context.Context, reportusecase.InventoryInput) (*reportusecase.InventoryReport, int64, error) {
+	return &reportusecase.InventoryReport{Items: []domain.InventoryReportRow{}}, 0, nil
+}
+
+func (stubReportUsecase) Movements(context.Context, reportusecase.MovementInput) (*reportusecase.MovementReport, int64, error) {
+	return &reportusecase.MovementReport{Items: []domain.MovementReportRow{}}, 0, nil
+}
+
+func (stubReportUsecase) Requests(context.Context, reportusecase.RequestInput) (*reportusecase.RequestReport, int64, error) {
+	return &reportusecase.RequestReport{Items: []domain.RequestReportRow{}}, 0, nil
+}
+
+func (stubReportUsecase) StockIntegrity(context.Context, reportusecase.StockIntegrityInput) (*reportusecase.StockIntegrityReport, int64, error) {
+	return &reportusecase.StockIntegrityReport{Items: []domain.StockIntegrityRow{}}, 0, nil
+}
+
 var (
 	requesterActor = domain.Actor{ID: uuid.New(), Username: "requester", Role: domain.RoleRequester}
 	keeperActor    = domain.Actor{ID: uuid.New(), Username: "keeper", Role: domain.RoleStorekeeper}
@@ -85,6 +104,7 @@ func authTestApp() *fiber.App {
 		StockMovementHandler: handler.NewStockMovementHandler(stubStockMovementUsecase{}),
 		AuthHandler:          handler.NewAuthHandler(authUC),
 		AuditHandler:         handler.NewAuditHandler(stubAuditRepository{}),
+		ReportHandler:        handler.NewReportHandler(stubReportUsecase{}),
 		AuthUsecase:          authUC,
 		AuditRepository:      stubAuditRepository{},
 	})
@@ -127,6 +147,12 @@ func TestNewRouter_RequiresAuthentication(t *testing.T) {
 		{name: "storekeeper can receive stock", method: "POST", path: "/api/v1/stock-receipts", token: "keeper-token", body: `{"product_id":"` + uuid.New().String() + `","quantity":1}`, want: fiber.StatusCreated},
 		{name: "storekeeper cannot read audit trail", method: "GET", path: "/api/v1/audit-events", token: "keeper-token", want: fiber.StatusForbidden},
 		{name: "admin can read audit trail", method: "GET", path: "/api/v1/audit-events", token: "admin-token", want: fiber.StatusOK},
+		{name: "reports require a token", method: "GET", path: "/api/v1/reports/inventory", want: fiber.StatusUnauthorized},
+		{name: "requester can read inventory report", method: "GET", path: "/api/v1/reports/inventory", token: "requester-token", want: fiber.StatusOK},
+		{name: "requester can read movement report", method: "GET", path: "/api/v1/reports/stock-movements", token: "requester-token", want: fiber.StatusOK},
+		{name: "requester can read request report", method: "GET", path: "/api/v1/reports/stock-requests", token: "requester-token", want: fiber.StatusOK},
+		{name: "requester cannot read integrity report", method: "GET", path: "/api/v1/reports/integrity/stock", token: "requester-token", want: fiber.StatusForbidden},
+		{name: "admin can read integrity report", method: "GET", path: "/api/v1/reports/integrity/stock", token: "admin-token", want: fiber.StatusOK},
 		{name: "login is public", method: "POST", path: "/api/v1/auth/login", body: `{"username":"someone","password":"whatever-pass"}`, want: fiber.StatusOK},
 	}
 

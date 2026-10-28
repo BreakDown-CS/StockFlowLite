@@ -88,6 +88,11 @@ func (m *mockSessionRepository) TouchLastUsed(ctx context.Context, id uuid.UUID,
 	return m.Called(ctx, id, at).Error(0)
 }
 
+func (m *mockSessionRepository) PurgeInactive(ctx context.Context, before time.Time) (int64, error) {
+	args := m.Called(ctx, before)
+	return args.Get(0).(int64), args.Error(1)
+}
+
 type mockAuditRepository struct{ mock.Mock }
 
 func (m *mockAuditRepository) Record(ctx context.Context, event domain.AuditEvent) error {
@@ -288,6 +293,44 @@ func TestAuthUsecase_LogoutRevokesSession(t *testing.T) {
 
 	// A missing session id is rejected.
 	require.ErrorIs(t, uc.Logout(context.Background(), actor, uuid.Nil), domain.ErrUnauthenticated)
+}
+
+func TestAuthUsecase_ChangePassword_RejectsReuse(t *testing.T) {
+	users := new(mockUserRepository)
+	sessions := new(mockSessionRepository)
+	audit := new(mockAuditRepository)
+	uc := newTestUsecase(t, users, sessions, audit)
+
+	user := activeUser(t, "grace", "current-pass", domain.RoleRequester)
+	users.On("GetByID", mock.Anything, user.ID).Return(user, nil)
+
+	err := uc.ChangePassword(context.Background(),
+		domain.Actor{ID: user.ID, Username: user.Username}, "current-pass", "current-pass")
+	require.ErrorIs(t, err, domain.ErrPasswordReused)
+	users.AssertNotCalled(t, "UpdatePasswordHash", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestAuthUsecase_Authenticate_ThrottlesLastUsedWrites(t *testing.T) {
+	users := new(mockUserRepository)
+	sessions := new(mockSessionRepository)
+	audit := new(mockAuditRepository)
+	uc := newTestUsecase(t, users, sessions, audit)
+
+	user := activeUser(t, "heidi", "s3cret-pass", domain.RoleRequester)
+	recent := time.Now().UTC().Add(-time.Minute)
+	session := &domain.AuthSession{
+		ID:         uuid.New(),
+		UserID:     user.ID,
+		ExpiresAt:  time.Now().Add(time.Hour),
+		LastUsedAt: &recent,
+	}
+
+	sessions.On("GetActiveByTokenHash", mock.Anything, coreauth.HashToken(testPepper, "token-recent")).
+		Return(session, user, nil)
+
+	_, _, err := uc.Authenticate(context.Background(), "token-recent")
+	require.NoError(t, err)
+	sessions.AssertNotCalled(t, "TouchLastUsed", mock.Anything, mock.Anything, mock.Anything)
 }
 
 func TestAuthUsecase_ChangePassword(t *testing.T) {

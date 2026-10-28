@@ -1,11 +1,14 @@
 package fiber
 
 import (
+	"time"
+
 	"github.com/BreakDown-CS/StockFlowLite/internal/adapter/http/fiber/handler"
 	"github.com/BreakDown-CS/StockFlowLite/internal/adapter/http/fiber/middleware"
 	"github.com/BreakDown-CS/StockFlowLite/internal/domain"
 	authusecase "github.com/BreakDown-CS/StockFlowLite/internal/usecase/auth"
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/helmet"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/gofiber/fiber/v2/middleware/requestid"
 )
@@ -20,23 +23,44 @@ type RouterConfig struct {
 	AuthHandler          *handler.AuthHandler
 	UserHandler          *handler.UserHandler
 	AuditHandler         *handler.AuditHandler
+	ReportHandler        *handler.ReportHandler
 
-	// AuthUsecase enables bearer-token authentication. When nil the route tree is registered
-	// without authentication, which is only intended for isolated tests.
+	// AuthUsecase enables bearer-token authentication. It is mandatory unless
+	// AllowInsecureAuth is set (isolated tests only).
 	AuthUsecase     authusecase.AuthUsecase
 	AuditRepository domain.AuditRepository
+
+	// AllowInsecureAuth lets tests build a router without authentication. It must never
+	// be enabled in a running service.
+	AllowInsecureAuth bool
+
+	// HTTP hardening (zero values fall back to Fiber defaults).
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+	IdleTimeout  time.Duration
+	BodyLimit    int
 }
 
 // NewRouter initializes and configures the Fiber application and its route tree.
 func NewRouter(cfg RouterConfig) *fiber.App {
+	if cfg.AuthUsecase == nil && !cfg.AllowInsecureAuth {
+		panic("router configuration requires AuthUsecase; set AllowInsecureAuth only in tests")
+	}
+
 	app := fiber.New(fiber.Config{
 		AppName:               "StockFlow Lite API",
 		DisableStartupMessage: true,
+		ReadTimeout:           cfg.ReadTimeout,
+		WriteTimeout:          cfg.WriteTimeout,
+		IdleTimeout:           cfg.IdleTimeout,
+		BodyLimit:             cfg.BodyLimit,
 	})
 
 	// Global middlewares
 	app.Use(recover.New())
 	app.Use(requestid.New())
+	app.Use(helmet.New())
+	app.Use(middleware.AccessLog())
 
 	// Health and readiness probes
 	if cfg.HealthHandler != nil {
@@ -117,6 +141,15 @@ func NewRouter(cfg RouterConfig) *fiber.App {
 	// Audit trail (ADMIN only, read-only)
 	if cfg.AuditHandler != nil {
 		api.Get("/audit-events", adminOnly, cfg.AuditHandler.List)
+	}
+
+	// Reporting (read-only; authorization is enforced inside each use case)
+	if cfg.ReportHandler != nil {
+		reports := api.Group("/reports")
+		reports.Get("/inventory", cfg.ReportHandler.Inventory)
+		reports.Get("/stock-movements", cfg.ReportHandler.Movements)
+		reports.Get("/stock-requests", cfg.ReportHandler.Requests)
+		reports.Get("/integrity/stock", adminOnly, cfg.ReportHandler.Integrity)
 	}
 
 	return app

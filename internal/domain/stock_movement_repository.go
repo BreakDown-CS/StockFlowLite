@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -10,6 +11,8 @@ import (
 type ListMovementFilter struct {
 	ProductID    *uuid.UUID
 	MovementType *MovementType
+	From         *time.Time
+	To           *time.Time
 	Limit        int
 	Offset       int
 }

@@ -186,6 +186,56 @@ func auditTypePtr(eventType domain.AuditEventType) *domain.AuditEventType {
 	return &eventType
 }
 
+func TestSessionRepository_PurgeInactive(t *testing.T) {
+	pool := newTestPool(t)
+	users := postgres.NewUserRepository(pool)
+	sessions := postgres.NewSessionRepository(pool)
+	ctx := context.Background()
+
+	user, _ := createTestUser(t, users, pool, domain.RoleRequester)
+	now := time.Now().UTC()
+
+	active := &domain.AuthSession{
+		UserID:    user.ID,
+		TokenHash: coreauth.HashToken("purge-test", uuid.NewString()),
+		CreatedAt: now,
+		ExpiresAt: now.Add(time.Hour),
+	}
+	require.NoError(t, sessions.Create(ctx, active))
+
+	expired := &domain.AuthSession{
+		UserID:    user.ID,
+		TokenHash: coreauth.HashToken("purge-test", uuid.NewString()),
+		CreatedAt: now.Add(-48 * time.Hour),
+		ExpiresAt: now.Add(-24 * time.Hour),
+	}
+	require.NoError(t, sessions.Create(ctx, expired))
+
+	revoked := &domain.AuthSession{
+		UserID:    user.ID,
+		TokenHash: coreauth.HashToken("purge-test", uuid.NewString()),
+		CreatedAt: now.Add(-48 * time.Hour),
+		ExpiresAt: now.Add(time.Hour),
+	}
+	require.NoError(t, sessions.Create(ctx, revoked))
+	past := now.Add(-30 * time.Hour)
+	require.NoError(t, sessions.Revoke(ctx, revoked.ID, past))
+
+	deleted, err := sessions.PurgeInactive(ctx, now.Add(-time.Hour))
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, deleted, int64(2))
+
+	// The active session must survive and remain usable.
+	_, resolvedUser, err := sessions.GetActiveByTokenHash(ctx, active.TokenHash)
+	require.NoError(t, err)
+	assert.Equal(t, user.ID, resolvedUser.ID)
+
+	var remaining int
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM auth_sessions WHERE user_id = $1`, user.ID).Scan(&remaining))
+	assert.Equal(t, 1, remaining)
+}
+
 func TestStockRequestRepository_WritesAuditAndBlocksSelfApproval(t *testing.T) {
 	pool := newTestPool(t)
 	requireDevIdentities(t, pool)
