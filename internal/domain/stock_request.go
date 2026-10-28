@@ -48,17 +48,18 @@ func (item *StockRequestItem) Validate() error {
 
 // StockRequest represents a department requisition for inventory items.
 type StockRequest struct {
-	ID              uuid.UUID          `json:"id"`
-	RequestNumber   string             `json:"request_number"`
-	RequesterID     uuid.UUID          `json:"requester_id"`
-	Status          RequestStatus      `json:"status"`
-	Notes           string             `json:"notes,omitempty"`
-	ReviewerID      *uuid.UUID         `json:"reviewer_id,omitempty"`
-	ReviewedAt      *time.Time         `json:"reviewed_at,omitempty"`
-	RejectionReason string             `json:"rejection_reason,omitempty"`
-	CreatedAt       time.Time          `json:"created_at"`
-	UpdatedAt       time.Time          `json:"updated_at"`
-	Items           []StockRequestItem `json:"items,omitempty"`
+	ID              uuid.UUID             `json:"id"`
+	RequestNumber   string                `json:"request_number"`
+	RequesterID     uuid.UUID             `json:"requester_id"`
+	Status          RequestStatus         `json:"status"`
+	Notes           string                `json:"notes,omitempty"`
+	ReviewerID      *uuid.UUID            `json:"reviewer_id,omitempty"`
+	ReviewedAt      *time.Time            `json:"reviewed_at,omitempty"`
+	RejectionReason string                `json:"rejection_reason,omitempty"`
+	CreatedAt       time.Time             `json:"created_at"`
+	UpdatedAt       time.Time             `json:"updated_at"`
+	Items           []StockRequestItem    `json:"items,omitempty"`
+	Issuance        *StockRequestIssuance `json:"issuance,omitempty"`
 }
 
 // NewStockRequest creates and validates a new stock request.
@@ -134,12 +135,72 @@ func (r *StockRequest) CanBeReviewed() bool {
 	return r.Status == StatusPending
 }
 
-// CanBeCancelled checks if the requester can cancel the request.
+// CanBeCancelled checks if the requester can still abandon the request.
+// A request may be cancelled while PENDING, or after approval as long as no stock
+// has been deducted yet (an ISSUED request can no longer be cancelled).
 func (r *StockRequest) CanBeCancelled() bool {
-	return r.Status == StatusPending
+	return r.Status == StatusPending || r.Status == StatusApproved
+}
+
+// Cancel moves a PENDING or APPROVED request to CANCELLED without touching stock.
+func (r *StockRequest) Cancel(cancelledAt time.Time) error {
+	if !r.CanBeCancelled() {
+		return ErrCannotCancel
+	}
+
+	r.Status = StatusCancelled
+	r.UpdatedAt = cancelledAt
+	return nil
 }
 
 // CanBeIssued checks if the warehouse can fulfill and deduct inventory.
 func (r *StockRequest) CanBeIssued() bool {
 	return r.Status == StatusApproved
+}
+
+// Approve transitions a PENDING request to APPROVED and records reviewer metadata.
+// Approval never touches stock; physical issuance is a separate step (see MarkIssued).
+func (r *StockRequest) Approve(reviewerID uuid.UUID, reviewedAt time.Time) error {
+	if reviewerID == uuid.Nil {
+		return ErrMissingReviewer
+	}
+	if !r.CanBeReviewed() {
+		return ErrCannotReview
+	}
+
+	r.Status = StatusApproved
+	r.ReviewerID = &reviewerID
+	r.ReviewedAt = &reviewedAt
+	r.RejectionReason = ""
+	r.UpdatedAt = reviewedAt
+	return nil
+}
+
+// Reject transitions a PENDING request to REJECTED and records reviewer metadata and the optional reason.
+// Rejection never touches stock.
+func (r *StockRequest) Reject(reviewerID uuid.UUID, reason string, reviewedAt time.Time) error {
+	if reviewerID == uuid.Nil {
+		return ErrMissingReviewer
+	}
+	if !r.CanBeReviewed() {
+		return ErrCannotReview
+	}
+
+	r.Status = StatusRejected
+	r.ReviewerID = &reviewerID
+	r.ReviewedAt = &reviewedAt
+	r.RejectionReason = strings.TrimSpace(reason)
+	r.UpdatedAt = reviewedAt
+	return nil
+}
+
+// MarkIssued transitions an APPROVED request to ISSUED once every item has been deducted from stock.
+func (r *StockRequest) MarkIssued(issuedAt time.Time) error {
+	if !r.CanBeIssued() {
+		return ErrCannotIssue
+	}
+
+	r.Status = StatusIssued
+	r.UpdatedAt = issuedAt
+	return nil
 }

@@ -33,6 +33,10 @@ func (h *StockMovementHandler) List(c *fiber.Ctx) error {
 		}
 		limit = parsedLimit
 	}
+	// Mirror the use case bound so the reported metadata matches the actual page size.
+	if limit > 100 {
+		limit = 100
+	}
 
 	offset := 0
 	if offsetStr := c.Query("offset"); offsetStr != "" {

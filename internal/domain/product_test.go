@@ -142,3 +142,26 @@ func TestProduct_ReceiveStock(t *testing.T) {
 	p.Deactivate()
 	assert.ErrorIs(t, p.ReceiveStock(10), domain.ErrProductInactive)
 }
+
+func TestProduct_DeductStock(t *testing.T) {
+	p, err := domain.NewProduct("SKU-1001", "Item", "desc", "PCS", 5)
+	require.NoError(t, err)
+	p.CurrentStock = 20
+
+	require.NoError(t, p.DeductStock(5))
+	assert.Equal(t, 15, p.CurrentStock)
+
+	// Stock can never become negative.
+	assert.ErrorIs(t, p.DeductStock(16), domain.ErrInsufficientStock)
+	assert.Equal(t, 15, p.CurrentStock)
+
+	// Non-positive quantities are rejected.
+	assert.ErrorIs(t, p.DeductStock(0), domain.ErrInvalidQuantity)
+	assert.ErrorIs(t, p.DeductStock(-3), domain.ErrInvalidQuantity)
+	assert.Equal(t, 15, p.CurrentStock)
+
+	// Inactive products cannot be issued.
+	p.Deactivate()
+	assert.ErrorIs(t, p.DeductStock(1), domain.ErrProductInactive)
+	assert.Equal(t, 15, p.CurrentStock)
+}

@@ -4,14 +4,39 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"strings"
 
 	"github.com/BreakDown-CS/StockFlowLite/internal/domain"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// PostgreSQL SQLSTATE codes and constraint names produced by the existing
+// migrations. Only these known conflicts are translated into domain errors;
+// anything else is surfaced as an unexpected failure (HTTP 500 at the edge).
+const (
+	pgErrCheckViolation      = "23514"
+	pgErrForeignKeyViolation = "23503"
+
+	constraintProductsCurrentStock  = "products_current_stock_check"
+	constraintMovementQuantityCheck = "stock_movements_quantity_check"
+	constraintMovementProductIDFK   = "stock_movements_product_id_fkey"
+)
+
+// insertStockMovementSQL appends one immutable ledger row and returns its generated id/timestamp.
+// Shared by stock receipts (movement_repo.go) and request issuance (stock_request_repo.go).
+const insertStockMovementSQL = `
+	INSERT INTO stock_movements (
+		product_id, movement_type, quantity, reference_type, reference_id, actor_id, notes, created_at
+	) VALUES (
+		$1, $2, $3, $4, $5, $6, $7, now()
+	)
+	RETURNING id, created_at;
+`
 
 // StockMovementRepository implements domain.StockMovementRepository using pgxpool.
 type StockMovementRepository struct {
@@ -32,15 +57,33 @@ func (r *StockMovementRepository) ReceiveStock(
 	refType string,
 	refID string,
 ) (*domain.StockReceiptResult, error) {
+	// Defence in depth: the use case validates these too, but the ledger invariant
+	// (quantity is always strictly positive) must never depend on a single layer.
+	if productID == uuid.Nil {
+		return nil, domain.ErrMissingProductID
+	}
+	if quantity <= 0 {
+		return nil, domain.ErrInvalidQuantity
+	}
+
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	// Rollback is a no-op after a successful commit, so it is safe to defer
+	// unconditionally: every error path below therefore leaves no partial writes.
+	defer func() {
+		if rErr := tx.Rollback(ctx); rErr != nil && !errors.Is(rErr, pgx.ErrTxClosed) {
+			slog.Error("Failed to roll back stock receipt transaction",
+				"product_id", productID.String(),
+				"error", rErr,
+			)
+		}
+	}()
 
 	// 1. Lock product row exclusively using row-level locking (FOR UPDATE)
 	const selectProductQuery = `
-		SELECT id, sku, name, description, unit, current_stock, min_stock, is_active, created_at, updated_at
+		SELECT id, sku, name, COALESCE(description, ''), unit, current_stock, min_stock, is_active, created_at, updated_at
 		FROM products
 		WHERE id = $1
 		FOR UPDATE;
@@ -86,19 +129,10 @@ func (r *StockMovementRepository) ReceiveStock(
 
 	err = tx.QueryRow(ctx, updateStockQuery, productID, quantity).Scan(&p.CurrentStock, &p.UpdatedAt)
 	if err != nil {
-		return nil, fmt.Errorf("failed to update product stock: %w", err)
+		return nil, mapWriteError("update product stock", err)
 	}
 
-	// 5. Insert stock movement record
-	const insertMovementQuery = `
-		INSERT INTO stock_movements (
-			product_id, movement_type, quantity, reference_type, reference_id, actor_id, notes, created_at
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, now()
-		)
-		RETURNING id, created_at;
-	`
-
+	// 5. Insert stock movement record (SQL shared with request issuance)
 	movement := &domain.StockMovement{
 		ProductID:     productID,
 		MovementType:  domain.MovementReceipt,
@@ -120,7 +154,7 @@ func (r *StockMovementRepository) ReceiveStock(
 
 	err = tx.QueryRow(
 		ctx,
-		insertMovementQuery,
+		insertStockMovementSQL,
 		productID,
 		string(domain.MovementReceipt),
 		quantity,
@@ -130,7 +164,18 @@ func (r *StockMovementRepository) ReceiveStock(
 		notesVal,
 	).Scan(&movement.ID, &movement.CreatedAt)
 	if err != nil {
-		return nil, fmt.Errorf("failed to insert stock movement: %w", err)
+		return nil, mapWriteError("insert stock movement", err)
+	}
+
+	receivedEvent := auditEventFromContext(ctx, domain.AuditStockReceived, domain.AuditEntityProduct, &p.ID)
+	receivedEvent.Reference = p.SKU
+	receivedEvent.Metadata = map[string]interface{}{
+		"quantity":    quantity,
+		"movement_id": movement.ID,
+		"sku":         p.SKU,
+	}
+	if err := insertAuditEvent(ctx, tx, receivedEvent); err != nil {
+		return nil, err
 	}
 
 	// 6. Commit transaction atomically
@@ -146,6 +191,20 @@ func (r *StockMovementRepository) ReceiveStock(
 
 // ListMovements retrieves paginated and filtered movement history records.
 func (r *StockMovementRepository) ListMovements(ctx context.Context, filter domain.ListMovementFilter) ([]domain.StockMovement, int64, error) {
+	// Defend the query against unbounded or negative pagination values even when the
+	// caller bypasses the use case (LIMIT must never be negative).
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	} else if limit > 100 {
+		limit = 100
+	}
+
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
 	where := []string{"1=1"}
 	args := []interface{}{}
 	argIdx := 1
@@ -181,7 +240,7 @@ func (r *StockMovementRepository) ListMovements(ctx context.Context, filter doma
 		LIMIT $%d OFFSET $%d;
 	`, whereClause, argIdx, argIdx+1)
 
-	queryArgs := append(args, filter.Limit, filter.Offset)
+	queryArgs := append(args, limit, offset)
 
 	rows, err := r.pool.Query(ctx, dataQuery, queryArgs...)
 	if err != nil {
@@ -189,7 +248,7 @@ func (r *StockMovementRepository) ListMovements(ctx context.Context, filter doma
 	}
 	defer rows.Close()
 
-	movements := make([]domain.StockMovement, 0, filter.Limit)
+	movements := make([]domain.StockMovement, 0, limit)
 	for rows.Next() {
 		var sm domain.StockMovement
 		var mTypeStr string
@@ -221,4 +280,22 @@ func (r *StockMovementRepository) ListMovements(ctx context.Context, filter doma
 	}
 
 	return movements, total, nil
+}
+
+// mapWriteError translates only the constraint conflicts this phase understands into
+// domain errors. Anything else is wrapped, so the HTTP layer answers 500 without
+// leaking SQL, credentials, or internal details to the client.
+func mapWriteError(operation string, err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch {
+		case pgErr.Code == pgErrCheckViolation && pgErr.ConstraintName == constraintProductsCurrentStock:
+			return domain.ErrStockOverflow
+		case pgErr.Code == pgErrCheckViolation && pgErr.ConstraintName == constraintMovementQuantityCheck:
+			return domain.ErrInvalidQuantity
+		case pgErr.Code == pgErrForeignKeyViolation && pgErr.ConstraintName == constraintMovementProductIDFK:
+			return domain.ErrProductNotFound
+		}
+	}
+	return fmt.Errorf("failed to %s: %w", operation, err)
 }

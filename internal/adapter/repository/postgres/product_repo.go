@@ -55,6 +55,11 @@ func (r *ProductRepository) Create(ctx context.Context, p *domain.Product) error
 		return fmt.Errorf("failed to insert product: %w", err)
 	}
 
+	createdEvent := auditEventFromContext(ctx, domain.AuditProductCreated, domain.AuditEntityProduct, &p.ID)
+	createdEvent.Reference = p.SKU
+	createdEvent.Metadata = map[string]interface{}{"unit": p.Unit, "min_stock": p.MinStock}
+	recordAuditBestEffort(ctx, r.pool, createdEvent)
+
 	return nil
 }
 
@@ -218,6 +223,11 @@ func (r *ProductRepository) Update(ctx context.Context, p *domain.Product) error
 		return domain.ErrProductNotFound
 	}
 
+	updatedEvent := auditEventFromContext(ctx, domain.AuditProductUpdated, domain.AuditEntityProduct, &p.ID)
+	updatedEvent.Reference = p.SKU
+	updatedEvent.Metadata = map[string]interface{}{"unit": p.Unit, "min_stock": p.MinStock}
+	recordAuditBestEffort(ctx, r.pool, updatedEvent)
+
 	return nil
 }
 
@@ -237,6 +247,9 @@ func (r *ProductRepository) Deactivate(ctx context.Context, id uuid.UUID) error 
 	if cmdTag.RowsAffected() == 0 {
 		return domain.ErrProductNotFound
 	}
+
+	deactivatedEvent := auditEventFromContext(ctx, domain.AuditProductDeactivated, domain.AuditEntityProduct, &id)
+	recordAuditBestEffort(ctx, r.pool, deactivatedEvent)
 
 	return nil
 }

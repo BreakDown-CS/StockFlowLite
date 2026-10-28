@@ -15,8 +15,9 @@ type Envelope struct {
 
 // ErrorDetail describes an error for client consumption without leaking internals.
 type ErrorDetail struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string      `json:"code"`
+	Message string      `json:"message"`
+	Details interface{} `json:"details,omitempty"`
 }
 
 // PageMeta provides pagination context for list responses.
@@ -73,6 +74,19 @@ func Error(c *fiber.Ctx, status int, code, message string) error {
 		Error: ErrorDetail{
 			Code:    code,
 			Message: message,
+		},
+	})
+}
+
+// ErrorWithDetails sends a failure response including a machine-readable details payload
+// (for example per-item stock shortages). Details must never contain SQL or credentials.
+func ErrorWithDetails(c *fiber.Ctx, status int, code, message string, details interface{}) error {
+	return c.Status(status).JSON(Envelope{
+		Success: false,
+		Error: ErrorDetail{
+			Code:    code,
+			Message: message,
+			Details: details,
 		},
 	})
 }

@@ -68,4 +68,48 @@ func TestMigrations_ConstraintDeclarations(t *testing.T) {
 	movSQL := string(movMigration)
 	assert.Contains(t, movSQL, "CHECK (movement_type IN ('RECEIPT', 'ISSUE', 'ADJUSTMENT'))")
 	assert.Contains(t, movSQL, "CHECK (quantity > 0)")
+
+	issuanceMigration, err := os.ReadFile("000006_create_stock_request_issuances.up.sql")
+	require.NoError(t, err)
+	issuanceSQL := string(issuanceMigration)
+	assert.Contains(t, issuanceSQL, "REFERENCES stock_requests(id)")
+	assert.Contains(t, issuanceSQL, "CONSTRAINT uq_stock_request_issuances_request UNIQUE (request_id)")
+	assert.Contains(t, issuanceSQL, "CONSTRAINT uq_stock_request_issuances_key UNIQUE (idempotency_key)")
+	assert.Contains(t, issuanceSQL, "CHECK (item_count > 0)")
+	assert.Contains(t, issuanceSQL, "CHECK (total_quantity > 0)")
+
+	authMigration, err := os.ReadFile("000007_auth_and_audit.up.sql")
+	require.NoError(t, err)
+	authSQL := string(authMigration)
+	assert.Contains(t, authSQL, "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true")
+	assert.Contains(t, authSQL, "CREATE TABLE IF NOT EXISTS auth_sessions")
+	assert.Contains(t, authSQL, "token_hash CHAR(64) NOT NULL UNIQUE")
+	assert.Contains(t, authSQL, "CREATE TABLE IF NOT EXISTS audit_events")
+	assert.Contains(t, authSQL, "ALTER TABLE stock_requests ADD COLUMN IF NOT EXISTS cancellation_reason TEXT")
+}
+
+// TestMigrations_AuthDownReversesUp guards the Phase 7 rollback path.
+func TestMigrations_AuthDownReversesUp(t *testing.T) {
+	downMigration, err := os.ReadFile("000007_auth_and_audit.down.sql")
+	require.NoError(t, err)
+
+	downSQL := string(downMigration)
+	assert.Contains(t, downSQL, "DROP TABLE IF EXISTS audit_events")
+	assert.Contains(t, downSQL, "DROP TABLE IF EXISTS auth_sessions")
+	// The rollback must never drop Phase 1-6 tables.
+	assert.NotContains(t, downSQL, "DROP TABLE IF EXISTS users")
+	assert.NotContains(t, downSQL, "DROP TABLE IF EXISTS stock_requests")
+}
+
+// TestMigrations_IssuanceDownReversesUp guards the Phase 6 rollback path.
+func TestMigrations_IssuanceDownReversesUp(t *testing.T) {
+	downMigration, err := os.ReadFile("000006_create_stock_request_issuances.down.sql")
+	require.NoError(t, err)
+
+	downSQL := string(downMigration)
+	assert.Contains(t, downSQL, "DROP TABLE IF EXISTS stock_request_issuances")
+	// The rollback must never touch Phase 1-5 tables.
+	assert.NotContains(t, downSQL, "DROP TABLE IF EXISTS stock_requests")
+	assert.NotContains(t, downSQL, "DROP TABLE IF EXISTS stock_request_items")
+	assert.NotContains(t, downSQL, "DROP TABLE IF EXISTS stock_movements")
 }

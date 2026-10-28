@@ -132,6 +132,24 @@ func (p *Product) ReceiveStock(quantity int) error {
 	return nil
 }
 
+// DeductStock safely decrements current stock for an outbound operation (issuance).
+// Inactive products and insufficient balances are rejected before any change is applied.
+func (p *Product) DeductStock(quantity int) error {
+	if !p.IsActive {
+		return ErrProductInactive
+	}
+	if quantity <= 0 {
+		return ErrInvalidQuantity
+	}
+	if err := p.CanDeductStock(quantity); err != nil {
+		return err
+	}
+
+	p.CurrentStock -= quantity
+	p.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
 // Deactivate sets the product active status to false.
 func (p *Product) Deactivate() {
 	p.IsActive = false

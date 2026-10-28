@@ -7,8 +7,22 @@ var (
 	// User domain errors
 	ErrEmptyUsername     = errors.New("username cannot be empty")
 	ErrUsernameTooShort  = errors.New("username must be at least 3 characters")
+	ErrUsernameTooLong   = errors.New("username cannot exceed 50 characters")
 	ErrEmptyPasswordHash = errors.New("password hash cannot be empty")
 	ErrInvalidRole       = errors.New("invalid user role; must be ADMIN, STOREKEEPER, or REQUESTER")
+
+	// Authentication & authorization errors
+	ErrInvalidCredentials        = errors.New("invalid username or password")
+	ErrUserInactive              = errors.New("user account is disabled")
+	ErrUserNotFound              = errors.New("user not found")
+	ErrDuplicateUsername         = errors.New("username is already taken")
+	ErrWeakPassword              = errors.New("password must be at least 8 characters and must not equal the username")
+	ErrUnauthenticated           = errors.New("authentication required")
+	ErrForbidden                 = errors.New("insufficient permissions for this operation")
+	ErrSelfApproval              = errors.New("requesters cannot approve or issue their own stock request")
+	ErrLastAdmin                 = errors.New("cannot deactivate or demote the last active administrator")
+	ErrTooManyAttempts           = errors.New("too many login attempts; please try again later")
+	ErrInvalidCancellationReason = errors.New("cancellation reason must not exceed 1000 characters")
 
 	// Product domain errors
 	ErrProductNotFound    = errors.New("product not found")
@@ -38,6 +52,17 @@ var (
 	ErrCannotReview       = errors.New("stock request cannot be reviewed in its current status")
 	ErrCannotCancel       = errors.New("stock request cannot be cancelled in its current status")
 	ErrCannotIssue        = errors.New("stock request cannot be issued unless approved")
+
+	// Stock Request workflow errors
+	ErrInvalidRequestID       = errors.New("invalid stock request ID")
+	ErrStockRequestNotFound   = errors.New("stock request not found")
+	ErrMissingReviewer        = errors.New("reviewer ID is required")
+	ErrDuplicateRequestNumber = errors.New("stock request number already exists")
+	ErrTooManyRequestItems    = errors.New("stock request cannot contain more than 100 items")
+
+	// Fulfillment (issuance) errors
+	ErrInvalidIdempotencyKey = errors.New("idempotency key must be 8-100 characters using A-Z a-z 0-9 . _ : -")
+	ErrIdempotencyKeyReused  = errors.New("idempotency key was already used for another stock request")
 
 	// Stock Movement domain errors
 	ErrInvalidMovementType = errors.New("invalid movement type; must be RECEIPT, ISSUE, or ADJUSTMENT")

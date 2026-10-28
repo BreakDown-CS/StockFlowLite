@@ -14,10 +14,14 @@ import (
 	httpfiber "github.com/BreakDown-CS/StockFlowLite/internal/adapter/http/fiber"
 	"github.com/BreakDown-CS/StockFlowLite/internal/adapter/http/fiber/handler"
 	"github.com/BreakDown-CS/StockFlowLite/internal/adapter/repository/postgres"
+	coreauth "github.com/BreakDown-CS/StockFlowLite/internal/auth"
 	"github.com/BreakDown-CS/StockFlowLite/internal/config"
 	"github.com/BreakDown-CS/StockFlowLite/internal/infrastructure/database"
+	authusecase "github.com/BreakDown-CS/StockFlowLite/internal/usecase/auth"
 	productusecase "github.com/BreakDown-CS/StockFlowLite/internal/usecase/product"
 	"github.com/BreakDown-CS/StockFlowLite/internal/usecase/stockmovement"
+	"github.com/BreakDown-CS/StockFlowLite/internal/usecase/stockrequest"
+	usermgmt "github.com/BreakDown-CS/StockFlowLite/internal/usecase/user"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -79,11 +83,40 @@ func main() {
 	stockReceiptHandler := handler.NewStockReceiptHandler(movementUC)
 	stockMovementHandler := handler.NewStockMovementHandler(movementUC)
 
+	// Request/approval workflow. Acting users come from the authenticated session token.
+	stockRequestRepo := postgres.NewStockRequestRepository(pool)
+	stockRequestUC := stockrequest.NewStockRequestUsecase(stockRequestRepo)
+	stockRequestHandler := handler.NewStockRequestHandler(stockRequestUC)
+
+	// Authentication, authorization and audit trail.
+	userRepo := postgres.NewUserRepository(pool)
+	sessionRepo := postgres.NewSessionRepository(pool)
+	auditRepo := postgres.NewAuditRepository(pool)
+	hasher := coreauth.NewHasher(cfg.Auth.PBKDF2Iterations)
+
+	authUC := authusecase.NewAuthUsecase(userRepo, sessionRepo, auditRepo, hasher, authusecase.Config{
+		TokenTTL:      cfg.Auth.TokenTTL,
+		Pepper:        cfg.Auth.TokenPepper,
+		MaxAttempts:   cfg.Auth.MaxLoginAttempts,
+		AttemptWindow: cfg.Auth.LoginWindow,
+	})
+	userUC := usermgmt.NewUserUsecase(userRepo, sessionRepo, auditRepo, hasher)
+
+	authHandler := handler.NewAuthHandler(authUC)
+	userHandler := handler.NewUserHandler(userUC)
+	auditHandler := handler.NewAuditHandler(auditRepo)
+
 	app := httpfiber.NewRouter(httpfiber.RouterConfig{
 		HealthHandler:        healthHandler,
 		ProductHandler:       productHandler,
 		StockReceiptHandler:  stockReceiptHandler,
 		StockMovementHandler: stockMovementHandler,
+		StockRequestHandler:  stockRequestHandler,
+		AuthHandler:          authHandler,
+		UserHandler:          userHandler,
+		AuditHandler:         auditHandler,
+		AuthUsecase:          authUC,
+		AuditRepository:      auditRepo,
 	})
 
 	// 5. Start HTTP server in a separate goroutine

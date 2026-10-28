@@ -21,15 +21,19 @@ var ValidRoles = []UserRole{RoleAdmin, RoleStorekeeper, RoleRequester}
 
 // User represents an actor in the system.
 type User struct {
-	ID           uuid.UUID `json:"id"`
-	Username     string    `json:"username"`
-	PasswordHash string    `json:"-"`
-	Role         UserRole  `json:"role"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID                uuid.UUID  `json:"id"`
+	Username          string     `json:"username"`
+	PasswordHash      string     `json:"-"`
+	Role              UserRole   `json:"role"`
+	IsActive          bool       `json:"is_active"`
+	LastLoginAt       *time.Time `json:"last_login_at,omitempty"`
+	PasswordChangedAt *time.Time `json:"-"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
 // NewUser creates a validated User instance with a generated UUID and timestamps.
+// The caller must supply an already-hashed password (never a plaintext password).
 func NewUser(username, passwordHash string, role UserRole) (*User, error) {
 	now := time.Now().UTC()
 	user := &User{
@@ -37,6 +41,7 @@ func NewUser(username, passwordHash string, role UserRole) (*User, error) {
 		Username:     strings.TrimSpace(username),
 		PasswordHash: passwordHash,
 		Role:         role,
+		IsActive:     true,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -54,6 +59,9 @@ func (u *User) Validate() error {
 	}
 	if len(strings.TrimSpace(u.Username)) < 3 {
 		return ErrUsernameTooShort
+	}
+	if len(strings.TrimSpace(u.Username)) > 50 {
+		return ErrUsernameTooLong
 	}
 	if strings.TrimSpace(u.PasswordHash) == "" {
 		return ErrEmptyPasswordHash

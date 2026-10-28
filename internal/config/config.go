@@ -8,12 +8,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	coreauth "github.com/BreakDown-CS/StockFlowLite/internal/auth"
 )
 
 // Config aggregates all application configuration values.
 type Config struct {
-	App AppConfig
-	DB  DBConfig
+	App  AppConfig
+	DB   DBConfig
+	Auth AuthConfig
 }
 
 // AppConfig defines HTTP server and general application settings.
@@ -21,6 +24,15 @@ type AppConfig struct {
 	Env             string
 	Port            int
 	ShutdownTimeout time.Duration
+}
+
+// AuthConfig defines authentication policy. Secrets are never logged.
+type AuthConfig struct {
+	TokenTTL         time.Duration
+	TokenPepper      string
+	PBKDF2Iterations int
+	MaxLoginAttempts int
+	LoginWindow      time.Duration
 }
 
 // DBConfig defines PostgreSQL connection and pool parameters.
@@ -38,8 +50,11 @@ type DBConfig struct {
 	HealthTimeout   time.Duration
 }
 
-// LoadFromEnv loads configuration from environment variables with safe defaults.
+// LoadFromEnv loads configuration from a dotenv file (optional) and environment
+// variables with safe defaults. Precedence: OS environment > dotenv > defaults.
 func LoadFromEnv() (*Config, error) {
+	loadDotEnvFile()
+
 	cfg := &Config{
 		App: AppConfig{
 			Env:             getEnvString("APP_ENV", "development"),
@@ -58,6 +73,13 @@ func LoadFromEnv() (*Config, error) {
 			MaxConnLifetime: getEnvDuration("DB_MAX_CONN_LIFETIME", 1*time.Hour),
 			MaxConnIdleTime: getEnvDuration("DB_MAX_CONN_IDLE_TIME", 30*time.Minute),
 			HealthTimeout:   getEnvDuration("DB_HEALTH_TIMEOUT", 3*time.Second),
+		},
+		Auth: AuthConfig{
+			TokenTTL:         getEnvDuration("AUTH_TOKEN_TTL", 12*time.Hour),
+			TokenPepper:      getEnvString("AUTH_TOKEN_PEPPER", "stockflow-development-pepper-change-me"),
+			PBKDF2Iterations: getEnvInt("AUTH_PBKDF2_ITERATIONS", coreauth.DefaultIterations),
+			MaxLoginAttempts: getEnvInt("AUTH_MAX_LOGIN_ATTEMPTS", 8),
+			LoginWindow:      getEnvDuration("AUTH_LOGIN_WINDOW", 15*time.Minute),
 		},
 	}
 
@@ -104,6 +126,23 @@ func (c *Config) Validate() error {
 	}
 	if c.DB.HealthTimeout <= 0 {
 		errs = append(errs, "DB_HEALTH_TIMEOUT must be positive")
+	}
+
+	// Validate Auth Config
+	if c.Auth.TokenTTL <= 0 {
+		errs = append(errs, "AUTH_TOKEN_TTL must be positive")
+	}
+	if len(strings.TrimSpace(c.Auth.TokenPepper)) < 16 {
+		errs = append(errs, "AUTH_TOKEN_PEPPER must be at least 16 characters")
+	}
+	if c.Auth.PBKDF2Iterations < coreauth.MinIterations {
+		errs = append(errs, fmt.Sprintf("AUTH_PBKDF2_ITERATIONS must be at least %d", coreauth.MinIterations))
+	}
+	if c.Auth.MaxLoginAttempts <= 0 {
+		errs = append(errs, "AUTH_MAX_LOGIN_ATTEMPTS must be positive")
+	}
+	if c.Auth.LoginWindow <= 0 {
+		errs = append(errs, "AUTH_LOGIN_WINDOW must be positive")
 	}
 
 	if len(errs) > 0 {

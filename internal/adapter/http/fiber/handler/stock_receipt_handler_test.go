@@ -162,6 +162,13 @@ func TestStockReceiptHandler_Create_ValidationErrors(t *testing.T) {
 			defer resp.Body.Close()
 
 			assert.Equal(t, tt.wantStatus, resp.StatusCode)
+
+			var res response.Envelope
+			require.NoError(t, json.NewDecoder(resp.Body).Decode(&res))
+			assert.False(t, res.Success)
+			errDetail, ok := res.Error.(map[string]interface{})
+			require.True(t, ok, "error envelope must be an object")
+			assert.Equal(t, tt.wantCode, errDetail["code"])
 		})
 	}
 }
@@ -248,5 +255,39 @@ func TestStockReceiptHandler_Create_UnexpectedDatabaseError(t *testing.T) {
 	// Must not leak internal SQL traces
 	errMap := res.Error.(map[string]interface{})
 	assert.NotContains(t, errMap["message"], "pq: connection terminated")
+	uc.AssertExpectations(t)
+}
+
+func TestStockReceiptHandler_Create_IgnoresClientSuppliedStockBalance(t *testing.T) {
+	uc := new(mockStockMovementUsecase)
+	h := handler.NewStockReceiptHandler(uc)
+	app := setupReceiptTestApp(h)
+
+	prodID := uuid.New()
+	p, _ := domain.NewProduct("SKU-777", "Widget", "desc", "PCS", 0)
+	p.ID = prodID
+	p.CurrentStock = 5
+	movement, _ := domain.NewStockMovement(prodID, domain.MovementReceipt, 5, "STOCK_RECEIPT", "", nil, "")
+
+	// Only the requested quantity may reach the use case; a client cannot dictate the balance.
+	uc.On("ReceiveStock", mock.Anything, mock.MatchedBy(func(input stockmovement.ReceiveStockInput) bool {
+		return input.ProductID == prodID && input.Quantity == 5
+	})).Return(&domain.StockReceiptResult{Product: p, Movement: movement}, nil)
+
+	payload := map[string]interface{}{
+		"product_id":    prodID.String(),
+		"quantity":      5,
+		"current_stock": 999999,
+		"stock_balance": 999999,
+	}
+	body, _ := json.Marshal(payload)
+
+	req := httptest.NewRequest("POST", "/api/v1/stock-receipts", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, fiber.StatusCreated, resp.StatusCode)
 	uc.AssertExpectations(t)
 }

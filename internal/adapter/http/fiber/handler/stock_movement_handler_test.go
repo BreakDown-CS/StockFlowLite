@@ -101,3 +101,54 @@ func TestStockMovementHandler_List_InvalidMovementType(t *testing.T) {
 
 	assert.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
 }
+
+func TestStockMovementHandler_List_ClampsLimitToMaximum(t *testing.T) {
+	uc := new(mockStockMovementUsecase)
+	h := handler.NewStockMovementHandler(uc)
+	app := setupMovementTestApp(h)
+
+	uc.On("ListMovements", mock.Anything, mock.MatchedBy(func(input stockmovement.ListMovementsInput) bool {
+		return input.Limit == 100
+	})).Return([]domain.StockMovement{}, int64(0), nil)
+
+	req := httptest.NewRequest("GET", "/api/v1/stock-movements?limit=500", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
+
+	var res struct {
+		Success bool              `json:"success"`
+		Meta    response.PageMeta `json:"meta"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&res))
+	assert.True(t, res.Success)
+	assert.Equal(t, 100, res.Meta.Limit, "metadata must report the effective page size")
+	assert.Equal(t, 0, res.Meta.Offset)
+	uc.AssertExpectations(t)
+}
+
+func TestStockMovementHandler_List_InvalidPagination(t *testing.T) {
+	queries := []string{"limit=0", "limit=-1", "limit=abc", "offset=-1", "offset=xyz"}
+
+	for _, query := range queries {
+		t.Run(query, func(t *testing.T) {
+			uc := new(mockStockMovementUsecase)
+			h := handler.NewStockMovementHandler(uc)
+			app := setupMovementTestApp(h)
+
+			req := httptest.NewRequest("GET", "/api/v1/stock-movements?"+query, nil)
+			resp, err := app.Test(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
+
+			var res response.Envelope
+			require.NoError(t, json.NewDecoder(resp.Body).Decode(&res))
+			assert.False(t, res.Success)
+			uc.AssertNotCalled(t, "ListMovements", mock.Anything, mock.Anything)
+		})
+	}
+}

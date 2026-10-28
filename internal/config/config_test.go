@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	coreauth "github.com/BreakDown-CS/StockFlowLite/internal/auth"
 	"github.com/BreakDown-CS/StockFlowLite/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,6 +18,8 @@ func TestLoadFromEnv_Defaults(t *testing.T) {
 		"DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_NAME",
 		"DB_SSLMODE", "DB_MAX_CONNS", "DB_MIN_CONNS",
 		"DB_MAX_CONN_LIFETIME", "DB_MAX_CONN_IDLE_TIME", "DB_HEALTH_TIMEOUT",
+		"AUTH_TOKEN_TTL", "AUTH_TOKEN_PEPPER", "AUTH_PBKDF2_ITERATIONS",
+		"AUTH_MAX_LOGIN_ATTEMPTS", "AUTH_LOGIN_WINDOW",
 	}
 	for _, k := range envKeys {
 		os.Unsetenv(k)
@@ -33,6 +36,13 @@ func TestLoadFromEnv_Defaults(t *testing.T) {
 	assert.Equal(t, "stockflow_db", cfg.DB.Name)
 	assert.Equal(t, int32(25), cfg.DB.MaxConns)
 	assert.Equal(t, int32(5), cfg.DB.MinConns)
+
+	// Authentication defaults: a strong work factor and a non-empty pepper.
+	assert.Equal(t, 12*time.Hour, cfg.Auth.TokenTTL)
+	assert.GreaterOrEqual(t, len(cfg.Auth.TokenPepper), 16)
+	assert.GreaterOrEqual(t, cfg.Auth.PBKDF2Iterations, coreauth.MinIterations)
+	assert.Equal(t, 8, cfg.Auth.MaxLoginAttempts)
+	assert.Equal(t, 15*time.Minute, cfg.Auth.LoginWindow)
 }
 
 func TestConfig_Validation(t *testing.T) {
@@ -97,6 +107,41 @@ func TestConfig_Validation(t *testing.T) {
 				c.DB.HealthTimeout = 0
 			},
 			wantErr: "DB_HEALTH_TIMEOUT must be positive",
+		},
+		{
+			name: "invalid auth token ttl",
+			mutate: func(c *config.Config) {
+				c.Auth.TokenTTL = 0
+			},
+			wantErr: "AUTH_TOKEN_TTL must be positive",
+		},
+		{
+			name: "auth token pepper too short",
+			mutate: func(c *config.Config) {
+				c.Auth.TokenPepper = "too-short"
+			},
+			wantErr: "AUTH_TOKEN_PEPPER must be at least 16 characters",
+		},
+		{
+			name: "auth pbkdf2 iterations below minimum",
+			mutate: func(c *config.Config) {
+				c.Auth.PBKDF2Iterations = 1_000
+			},
+			wantErr: "AUTH_PBKDF2_ITERATIONS must be at least",
+		},
+		{
+			name: "invalid auth max login attempts",
+			mutate: func(c *config.Config) {
+				c.Auth.MaxLoginAttempts = 0
+			},
+			wantErr: "AUTH_MAX_LOGIN_ATTEMPTS must be positive",
+		},
+		{
+			name: "invalid auth login window",
+			mutate: func(c *config.Config) {
+				c.Auth.LoginWindow = 0
+			},
+			wantErr: "AUTH_LOGIN_WINDOW must be positive",
 		},
 	}
 
